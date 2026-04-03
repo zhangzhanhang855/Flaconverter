@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FLAC 到 MP3 高音质转换器 (纯本地)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background-color: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+        }
+        h2 {
+            margin-top: 0;
+            color: #2c3e50;
+        }
+        p.desc {
+            font-size: 14px;
+            color: #7f8c8d;
+            margin-bottom: 30px;
+        }
+        input[type="file"] {
+            display: none;
+        }
+        .custom-file-upload {
+            border: 2px dashed #3498db;
+            display: inline-block;
+            padding: 20px;
+            cursor: pointer;
+            border-radius: 8px;
+            color: #3498db;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            width: 80%;
+        }
+        .custom-file-upload:hover {
+            background-color: #ecf0f1;
+        }
+        #status {
+            margin-top: 20px;
+            font-weight: bold;
+            color: #e67e22;
+        }
+        #downloadBtn {
+            display: none;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background-color: #2ecc71;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        #downloadBtn:hover {
+            background-color: #27ae60;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>FLAC 转 MP3 转换器</h2>
+    <p class="desc">纯本地转换，最高 320kbps 音质，无需上传，保护隐私。</p>
+    
+    <label class="custom-file-upload">
+        <input type="file" id="fileInput" accept=".flac" />
+        点击选择 FLAC 文件
+    </label>
+
+    <div id="status"></div>
+    <a id="downloadBtn" download="converted.mp3">下载 MP3 文件</a>
+</div>
+
+<script>
+    const fileInput = document.getElementById('fileInput');
+    const statusDiv = document.getElementById('status');
+    const downloadBtn = document.getElementById('downloadBtn');
+
+    fileInput.addEventListener('change', async function(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        // 重置 UI
+        downloadBtn.style.display = 'none';
+        statusDiv.innerText = '正在读取和解码音频，请稍候...';
+
+        try {
+            // 1. 使用 Web Audio API 读取并解码 FLAC
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const arrayBuffer = await file.arrayBuffer();
+            const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+            statusDiv.innerText = '正在进行高音质 (320kbps) MP3 编码...';
+            
+            // 为了防止阻塞 UI，我们将编码过程放入 setTimeout
+            setTimeout(() => {
+                encodeToMP3(audioBuffer, file.name);
+            }, 100);
+
+        } catch (error) {
+            console.error(error);
+            statusDiv.innerText = '音频解码失败，请确保文件是有效的 FLAC 格式。';
+            statusDiv.style.color = '#e74c3c';
+        }
+    });
+
+    function encodeToMP3(audioBuffer, originalFileName) {
+        const channels = audioBuffer.numberOfChannels;
+        const sampleRate = audioBuffer.sampleRate;
+        // 使用 320kbps 获得最高音质
+        const kbps = 320; 
+        
+        // 初始化 lamejs 编码器
+        const encoder = new lamejs.Mp3Encoder(channels, sampleRate, kbps);
+        const mp3Data = [];
+
+        // 获取左右声道数据 (Float32Array 格式)
+        const left = audioBuffer.getChannelData(0);
+        const right = channels > 1 ? audioBuffer.getChannelData(1) : left;
+
+        // lamejs 需要 Int16Array 格式的数据，我们需要转换
+        const sampleBlockSize = 1152;
+        const floatTo16BitPCM = (input, output) => {
+            for (let i = 0; i < input.length; i++) {
+                let s = Math.max(-1, Math.min(1, input[i]));
+                output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+        };
+
+        const leftInt16 = new Int16Array(left.length);
+        floatTo16BitPCM(left, leftInt16);
+        let rightInt16 = leftInt16;
+
+        if (channels > 1) {
+            rightInt16 = new Int16Array(right.length);
+            floatTo16BitPCM(right, rightInt16);
+        }
+
+        // 分块编码音频数据
+        for (let i = 0; i < leftInt16.length; i += sampleBlockSize) {
+            const leftChunk = leftInt16.subarray(i, i + sampleBlockSize);
+            const rightChunk = rightInt16.subarray(i, i + sampleBlockSize);
+
+            let mp3buf;
+            if (channels > 1) {
+                mp3buf = encoder.encodeBuffer(leftChunk, rightChunk);
+            } else {
+                mp3buf = encoder.encodeBuffer(leftChunk);
+            }
+
+            if (mp3buf.length > 0) {
+                mp3Data.push(mp3buf);
+            }
+        }
+
+        // 结束编码
+        const mp3buf = encoder.flush();
+        if (mp3buf.length > 0) {
+            mp3Data.push(mp3buf);
+        }
+
+        // 2. 将编码后的数据生成 Blob 和下载链接
+        const blob = new Blob(mp3Data, { type: 'audio/mp3' });
+        const url = URL.createObjectURL(blob);
+
+        statusDiv.innerText = '转换完成！';
+        statusDiv.style.color = '#27ae60';
+        
+        // 设置下载文件名（替换原后缀为.mp3）
+        const newFileName = originalFileName.replace(/\.[^/.]+$/, "") + ".mp3";
+        downloadBtn.download = newFileName;
+        downloadBtn.href = url;
+        downloadBtn.style.display = 'inline-block';
+    }
+</script>
+
+</body>
+</html>
